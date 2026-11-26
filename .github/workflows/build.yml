@@ -1,0 +1,90 @@
+name: Build PocketADBUnlock
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          brew install ldid dpkg || true
+          git clone --depth 1 --recursive https://github.com/theos/theos.git "$HOME/theos"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+          mkdir -p out
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer || true
+
+      - name: Build
+        run: |
+          set -e
+          export THEOS="$HOME/theos"
+          make clean || true
+          make FINALPACKAGE=1
+          RAW=$(find .theos/obj -name 'PocketADBUnlock.dylib' | head -1)
+          test -n "$RAW"
+          cp "$RAW" out/PocketADBUnlock_raw.dylib
+          ls -l out/PocketADBUnlock_raw.dylib
+
+      - name: Sanitize + sign + verify
+        run: |
+          set -e
+          python3 tools/strip_substrate.py out/PocketADBUnlock_raw.dylib \
+             -o out/PocketADBUnlock.dylib --id-name PocketADBUnlock.dylib
+          ldid -S out/PocketADBUnlock.dylib
+          python3 tools/strip_substrate.py out/PocketADBUnlock.dylib --report
+          python3 - <<'PY'
+          import struct, sys
+          p='out/PocketADBUnlock.dylib'
+          d=open(p,'rb').read()
+          # ---- Mach-O thin arm64 ----
+          assert d[:4]==b'\xcf\xfa\xed\xfe', 'expected thin arm64 MH_MAGIC_64, got '+d[:4].hex()
+          cputype=struct.unpack_from('<I',d,4)[0]
+          assert cputype==0x100000c, 'cputype != arm64: 0x%x'%cputype
+          # ---- 零越狱关键词（整文件字节扫描，strings 扫不到 load command）----
+          banned=[b'CydiaSubstrate',b'MobileSubstrate',b'DynamicLibraries',
+                  b'MSHook',b'_logos_',b'libsubstrate',b'/Library/MobileSubstrate']
+          for b in banned:
+              assert b not in d, 'banned token present: '+b.decode()
+          # ---- install name @rpath ----
+          assert b'@rpath/PocketADBUnlock.dylib' in d, 'install name not @rpath'
+          # ---- 功能靶点：swift_allocObject / 类名 / 关键 ivar ----
+          for tok in [b'swift_allocObject', b'PurchaseStore', b'legacyAccess',
+                      b'confirmedLegacyUser', b'hasLegacySnapshot']:
+              assert tok in d, 'missing functional target: '+tok.decode()
+          # ---- constructor 段：本插件靠 __attribute__((constructor)) 启动 ----
+          ncmds=struct.unpack_from('<I',d,16)[0]
+          pos=32; found_init=False; sect_names=[]
+          for _ in range(ncmds):
+              cmd,sz=struct.unpack_from('<II',d,pos)
+              if cmd==0x19:  # LC_SEGMENT_64
+                  nsect=struct.unpack_from('<I',d,pos+64)[0]
+                  sp=pos+72
+                  for i in range(nsect):
+                      sn=d[sp:sp+16].split(b'\0')[0].decode('utf-8','replace')
+                      ssz=struct.unpack_from('<Q',d,sp+40)[0]
+                      sect_names.append(sn)
+                      if sn=='__mod_init_func' and ssz>=8: found_init=True
+                      sp+=80
+              pos+=sz
+          assert found_init, 'NO __mod_init_func section (constructor lost!): '+str(sect_names)
+          print('OK size=%d  __mod_init_func present  install-name=@rpath' % len(d))
+          PY
+          # ---- 零 hook 符号：本插件不改 ObjC 方法实现 ----
+          if nm -u out/PocketADBUnlock.dylib | grep -qiE 'method_setImplementation|class_replaceMethod|class_addMethod|MSHook|_logos_'; then
+            echo 'unexpected objc hook symbol'; exit 1
+          fi
+
+      - name: Upload dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketADBUnlock-dylib
+          path: out/PocketADBUnlock.dylib
+          if-no-files-found: error

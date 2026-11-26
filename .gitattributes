@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.m text eol=lf
+Makefile text eol=lf
+control text eol=lf
+*.py text eol=lf
+*.yml text eol=lf

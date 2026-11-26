@@ -1,0 +1,8 @@
+Package: com.hany.pocketadb.unlock
+Name: PocketADBUnlock
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Targeted entitlement unlock for PocketADB (research, unverified on device)
+Maintainer: hany
+Author: hany
+Section: Development
