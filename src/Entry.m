@@ -69,7 +69,7 @@ static void remember_instance(void *obj) {
 
 static void *pdb_alloc(const void *metadata, size_t size, size_t align) {
     void *obj = g_real_alloc ? g_real_alloc(metadata, size, align) : NULL;
-    if (g_store && metadata == (const void *)g_store && obj) {
+    if (g_store && metadata == (__bridge const void *)g_store && obj) {
         remember_instance(obj);
     }
     return obj;
